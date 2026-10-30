@@ -12,11 +12,11 @@ uv run main.py
 
 浏览器访问 `http://127.0.0.1:8000`，在连接管理中保存 SSH 主机、端口、用户名和密码，然后打开终端或文件。网页通过 jsDelivr 加载 xterm.js，浏览器需要能访问该 CDN。
 
-Windows 下启动成功后，程序会驻留在系统托盘，命令行可以关闭。左键单击托盘图标打开网页；右键菜单依次提供“打开”和“退出程序”。退出会停止服务并断开所有 SSH 会话。托盘网页地址使用 `config.toml` 中的监听地址和端口；监听所有地址时使用本机地址访问。其他平台保持前台运行，可用 Ctrl+C 退出。
+源码默认在前台运行，可用 Ctrl+C 退出。Windows 下需要系统托盘时，使用 `uv run main.py --tray`；启动成功后程序驻留在托盘，命令行可以关闭。左键单击托盘图标打开网页；右键菜单依次提供“打开”和“退出程序”。退出会停止服务并断开所有 SSH 会话。托盘网页地址使用 `config.toml` 中的监听地址和端口；监听所有地址时使用本机地址访问。
 
 ## 打包 Windows 单文件
 
-在 Windows 项目目录运行 `uv run --group build python build_windows.py`，生成文件为 `dist/MXSSH.exe`。EXE 和托盘使用相同图标。EXE 首次运行时会在同一目录创建 `config.toml`，连接数据库也保存在该目录；请将 EXE 放在有写入权限的目录。网页终端组件仍通过 CDN 加载。
+在 Windows 项目目录运行 `uv run --group build python build_windows.py`，生成文件为 `dist/MXSSH.exe`。EXE 启动后默认驻留在系统托盘，EXE 和托盘使用相同图标。EXE 首次运行时会在同一目录创建 `config.toml`，连接数据库也保存在该目录；请将 EXE 放在有写入权限的目录。网页终端组件仍通过 CDN 加载。
 
 ## 连接管理
 

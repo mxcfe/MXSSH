@@ -43,6 +43,11 @@
 .header-actions { display:flex; flex:0 0 auto; align-items:center; gap:6px; padding:0 10px; border-left:1px solid var(--border); }
 .header-actions .header-action { height:32px; border-radius:4px; padding:0 9px; }
 .header-actions .header-action.active { box-shadow:none; background:var(--accent-bg); color:var(--accent); }
+.backend-status { display:flex; align-items:center; gap:6px; padding:0 6px; color:var(--muted); font-size:11px; white-space:nowrap; }
+.backend-status-dot { width:8px; height:8px; flex:none; border-radius:50%; background:#d7a84e; }
+.backend-status[data-state="online"] .backend-status-dot { background:#59b888; }
+.backend-status[data-state="offline"] .backend-status-dot { background:var(--danger); }
+@media (max-width:520px) { .backend-status-text { display:none; } }
 .workspace-tabs .session-tabs { flex:0 0 auto; overflow:visible; }
 .workspace-tabs .session-tab { min-height:48px; }
 .session-tab .tab-label { min-height:38px; }

@@ -1,4 +1,5 @@
 import asyncio
+import argparse
 import copy
 import json
 import os
@@ -510,6 +511,11 @@ def settings_response(config):
     return {"port": configured_port, "active_port": active_port, "restart_required": configured_port != active_port}
 
 
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
+
+
 @app.get("/api/settings")
 def get_settings():
     try:
@@ -972,8 +978,14 @@ if __name__ == "__main__":
             with suppress(OSError):
                 publish_tray_status(sys.argv[2], "error:" + (str(exc) or "托盘启动失败"))
             raise
-    elif sys.platform == "win32":
-        start_windows_tray()
     else:
-        host, port = server_address()
-        uvicorn.run(app, host=host, port=port)
+        parser = argparse.ArgumentParser(description="MXSSH 网页 SSH 服务")
+        parser.add_argument("--tray", action="store_true", help="在 Windows 系统托盘中运行")
+        args = parser.parse_args()
+        if args.tray:
+            if sys.platform != "win32":
+                parser.error("--tray 仅支持 Windows")
+            start_windows_tray()
+        else:
+            host, port = server_address()
+            uvicorn.run(app, host=host, port=port)

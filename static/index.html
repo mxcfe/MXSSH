@@ -5,12 +5,12 @@
   <title>MXSSH</title>
   <script>try { if (localStorage.getItem('mxssh-theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch (_) {}</script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
-  <link rel="stylesheet" href="/static/style.css?v=20261030-order5">
+  <link rel="stylesheet" href="/static/style.css?v=20261030-health1">
 </head>
 <body>
   <div class="app-shell">
     <main class="main-area">
-      <header class="app-header"><div class="brand"><span class="brand-mark">&gt;_</span><strong>MXSSH</strong></div><nav id="workspace-tabs" class="workspace-tabs" aria-label="工作区标签"><button class="nav-item home-tab active" data-view="connections" type="button">▤ <span>首页</span></button><div id="session-tabs" class="session-tabs" aria-label="SSH 会话"></div></nav><div class="header-actions"><button class="nav-item header-action" data-view="settings-view" type="button" title="设置">⚙ <span>设置</span></button><button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false">☼ 浅色主题</button></div></header>
+      <header class="app-header"><div class="brand"><span class="brand-mark">&gt;_</span><strong>MXSSH</strong></div><nav id="workspace-tabs" class="workspace-tabs" aria-label="工作区标签"><button class="nav-item home-tab active" data-view="connections" type="button">▤ <span>首页</span></button><div id="session-tabs" class="session-tabs" aria-label="SSH 会话"></div></nav><div class="header-actions"><span id="backend-status" class="backend-status" data-state="checking" role="status" aria-live="polite" title="正在检查后端"><span class="backend-status-dot" aria-hidden="true"></span><span class="backend-status-text">检查中</span></span><button class="nav-item header-action" data-view="settings-view" type="button" title="设置">⚙ <span>设置</span></button><button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false">☼ 浅色主题</button></div></header>
       <div class="topbar"><div class="breadcrumb"><span>MXSSH</span><span>/</span><strong id="page-name">连接管理</strong></div></div>
       <section id="connections" class="view connections-view">
         <div class="page-heading"><div><h1>连接管理</h1><p class="subtitle">保存和管理 SSH 主机</p></div><button id="new-connection" class="primary-button" type="button">＋ 新建连接</button></div>
@@ -73,6 +73,6 @@
     </section>
   </div></div>
   <div id="quick-commands-popover" class="quick-commands-popover" role="group" aria-label="快捷指令列表" hidden><div id="quick-commands-list"></div><p id="quick-commands-message" role="status"></p></div>
-  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script><script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script><script src="/static/app.js?v=20261030-order5"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script><script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script><script src="/static/app.js?v=20261030-health2"></script>
 </body>
 </html>

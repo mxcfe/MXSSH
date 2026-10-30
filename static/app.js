@@ -1,4 +1,26 @@
 const message = document.querySelector('#message');
+const backendStatus = document.querySelector('#backend-status');
+async function checkBackendStatus() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
+  try {
+    const response = await fetch('/api/health', { cache: 'no-store', signal: controller.signal });
+    if (!response.ok || (await response.json()).status !== 'ok') throw new Error('后端不可用');
+    backendStatus.dataset.state = 'online';
+    backendStatus.title = '后端运行中';
+    backendStatus.setAttribute('aria-label', '后端运行中');
+    backendStatus.querySelector('.backend-status-text').textContent = '在线';
+  } catch (_) {
+    backendStatus.dataset.state = 'offline';
+    backendStatus.title = '无法连接后端';
+    backendStatus.setAttribute('aria-label', '无法连接后端');
+    backendStatus.querySelector('.backend-status-text').textContent = '离线';
+  } finally {
+    clearTimeout(timeout);
+    setTimeout(checkBackendStatus, 5000);
+  }
+}
+checkBackendStatus();
 const disconnectButton = document.querySelector('#disconnect');
 const sessions = [];
 const terminalThemes = {
@@ -730,10 +752,10 @@ function activateSession(session) {
   }
 }
 
-function closeSession(session) {
+function closeSession(session, preserveRemote = false) {
   const index = sessions.indexOf(session);
   if (index < 0) return;
-  disconnectSession(session);
+  if (!preserveRemote) disconnectSession(session);
   sessions.splice(index, 1);
   persistSessions();
   session.term.dispose();
@@ -816,26 +838,29 @@ function startConnection(options, name, initialMode = 'terminal', layout = null)
       if (session === activeSession && filePanelVisible()) refreshFilePanel(splitFilesOpen && !options.session_token);
     } else if (data.type === 'error') {
       session.message = `连接错误：${data.message}`;
-      if (options.session_token) { removeSharedSession(session.resumeToken); session.resumeToken = null; persistSessions(); }
+      if (options.session_token && session.state === '连接中') {
+        removeSharedSession(session.resumeToken);
+        session.resumeToken = null;
+        closeSession(session);
+        return;
+      }
     } else if (data.type === 'session_closed') {
       removeSharedSession(session.resumeToken);
       session.resumeToken = null;
       session.fileToken = null;
-      session.manualDisconnect = true;
-      session.message = 'SSH 会话已结束。';
-      persistSessions();
+      closeSession(session);
+      return;
     }
     refreshSession(session);
   };
   socket.onerror = () => { if (sessions.includes(session)) { session.message = 'WebSocket 连接失败，请检查服务状态。'; refreshSession(session); } };
   socket.onclose = () => {
+    if (!sessions.includes(session)) return;
+    const wasConnecting = session.state === '连接中';
     session.state = '已断开';
     session.fileToken = null;
-    if (session.message === '连接成功。' || session.message === '正在连接 SSH 服务器…') {
-      session.message = session.manualDisconnect ? '连接已断开。' : '连接中断，可在 1 分钟内刷新页面恢复。';
-    }
-    if (sessions.includes(session)) refreshSession(session);
-    if (sessions.includes(session) && filePanelVisible()) refreshFilePanel();
+    if (wasConnecting && session.message !== '正在连接 SSH 服务器…') message.textContent = session.message;
+    closeSession(session, Boolean(session.resumeToken));
   };
 }
 function disconnectSession(session) {
@@ -854,7 +879,7 @@ function disconnectSession(session) {
   }
 }
 disconnectButton.addEventListener('click', () => {
-  if (activeSession) { disconnectSession(activeSession); disconnectButton.disabled = true; }
+  if (activeSession) closeSession(activeSession);
 });
 keysToggle.addEventListener('click', () => {
   if (!activeSession) return;
@@ -1159,14 +1184,11 @@ persistSessions();
 window.addEventListener('storage', event => {
   if (!event.key || !event.key.startsWith(sharedSessionPrefix) || event.newValue !== null) return;
   const token = event.key.slice(sharedSessionPrefix.length);
-  for (const session of sessions) {
+  for (const session of [...sessions]) {
     if (session.resumeToken !== token) continue;
-    session.manualDisconnect = true;
     session.resumeToken = null;
     session.fileToken = null;
-    session.message = '连接已在其他标签页断开。';
-    session.socket.close();
-    refreshSession(session);
+    closeSession(session);
   }
   persistSessions();
   if (filePanelVisible()) refreshFilePanel();
