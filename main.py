@@ -311,6 +311,7 @@ async def download_remote_file(request: Request, path: str):
 def database():
     db = sqlite3.connect(DATABASE, timeout=10)
     db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys = ON")
     db.execute("""CREATE TABLE IF NOT EXISTS connections (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, host TEXT NOT NULL,
         port INTEGER NOT NULL, username TEXT NOT NULL, password TEXT NOT NULL
@@ -318,6 +319,15 @@ def database():
     db.execute("""CREATE TABLE IF NOT EXISTS trusted_host_keys (
         host TEXT NOT NULL, port INTEGER NOT NULL, public_key TEXT NOT NULL,
         PRIMARY KEY (host, port)
+    )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS connection_commands (
+        id TEXT PRIMARY KEY, connection_id TEXT NOT NULL,
+        name TEXT NOT NULL, command TEXT NOT NULL,
+        FOREIGN KEY (connection_id) REFERENCES connections(id) ON DELETE CASCADE
+    )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS connection_order (
+        connection_id TEXT PRIMARY KEY, position INTEGER NOT NULL,
+        FOREIGN KEY (connection_id) REFERENCES connections(id) ON DELETE CASCADE
     )""")
     return db
 
@@ -335,8 +345,31 @@ class ConnectionInput(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
+class ConnectionMoveInput(BaseModel):
+    direction: str | None = Field(default=None, pattern="^(up|down)$")
+    target_id: str | None = None
+    placement: str | None = Field(default=None, pattern="^(before|after)$")
+
+
 class ConnectionTestInput(ConnectionInput):
     connection_id: str | None = None
+
+
+class ShortcutCommandInput(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    command: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("command")
+    @classmethod
+    def validate_command(cls, value):
+        if not value.strip() or any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError("命令必须为非空单行文本，不能包含控制字符")
+        return value
 
 
 class HostKeyConfirmation(BaseModel):
@@ -550,8 +583,89 @@ async def test_connection(item: ConnectionTestInput, request: Request):
 def list_connections():
     with closing(database()) as db, db:
         return [dict(row) for row in db.execute(
-            "SELECT id, name, host, port, username FROM connections ORDER BY name COLLATE NOCASE, id"
+            "SELECT c.id, c.name, c.host, c.port, c.username FROM connections c "
+            "LEFT JOIN connection_order o ON o.connection_id=c.id "
+            "ORDER BY o.position IS NULL, o.position, c.name COLLATE NOCASE, c.id"
         )]
+
+
+@app.post("/api/connections/{connection_id}/move")
+def move_connection(connection_id: str, item: ConnectionMoveInput, request: Request):
+    check_origin(request)
+    with closing(database()) as db, db:
+        db.execute("BEGIN IMMEDIATE")
+        ids = [row[0] for row in db.execute(
+            "SELECT c.id FROM connections c LEFT JOIN connection_order o ON o.connection_id=c.id "
+            "ORDER BY o.position IS NULL, o.position, c.name COLLATE NOCASE, c.id"
+        )]
+        if connection_id not in ids:
+            raise HTTPException(status_code=404, detail="连接不存在")
+        original = ids.copy()
+        index = ids.index(connection_id)
+        if item.direction and not item.target_id and not item.placement:
+            target = index + (-1 if item.direction == "up" else 1)
+            if 0 <= target < len(ids):
+                ids[index], ids[target] = ids[target], ids[index]
+        elif not item.direction and item.target_id and item.placement:
+            if item.target_id not in ids:
+                raise HTTPException(status_code=404, detail="目标连接不存在")
+            if item.target_id != connection_id:
+                ids.remove(connection_id)
+                target = ids.index(item.target_id) + (item.placement == "after")
+                ids.insert(target, connection_id)
+        else:
+            raise HTTPException(status_code=422, detail="排序参数无效")
+        if ids != original:
+            db.executemany(
+                "INSERT INTO connection_order (connection_id, position) VALUES (?, ?) "
+                "ON CONFLICT(connection_id) DO UPDATE SET position=excluded.position",
+                ((id, position) for position, id in enumerate(ids)),
+            )
+    return {"moved": ids != original}
+
+
+@app.get("/api/connections/{connection_id}/commands")
+def list_shortcuts(connection_id: str):
+    with closing(database()) as db, db:
+        if not db.execute("SELECT 1 FROM connections WHERE id=?", (connection_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="连接不存在")
+        return [dict(row) for row in db.execute(
+            "SELECT id, name, command FROM connection_commands WHERE connection_id=? ORDER BY name COLLATE NOCASE, id",
+            (connection_id,),
+        )]
+
+
+@app.post("/api/connections/{connection_id}/commands", status_code=201)
+def create_shortcut(connection_id: str, item: ShortcutCommandInput, request: Request):
+    check_origin(request)
+    command_id = uuid.uuid4().hex
+    with closing(database()) as db, db:
+        if not db.execute("SELECT 1 FROM connections WHERE id=?", (connection_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="连接不存在")
+        db.execute("INSERT INTO connection_commands (id, connection_id, name, command) VALUES (?, ?, ?, ?)",
+                   (command_id, connection_id, item.name, item.command))
+    return {"id": command_id}
+
+
+@app.put("/api/connections/{connection_id}/commands/{command_id}")
+def update_shortcut(connection_id: str, command_id: str, item: ShortcutCommandInput, request: Request):
+    check_origin(request)
+    with closing(database()) as db, db:
+        result = db.execute("UPDATE connection_commands SET name=?, command=? WHERE id=? AND connection_id=?",
+                            (item.name, item.command, command_id, connection_id))
+        if not result.rowcount:
+            raise HTTPException(status_code=404, detail="快捷命令不存在")
+    return {"id": command_id}
+
+
+@app.delete("/api/connections/{connection_id}/commands/{command_id}")
+def delete_shortcut(connection_id: str, command_id: str, request: Request):
+    check_origin(request)
+    with closing(database()) as db, db:
+        if not db.execute("DELETE FROM connection_commands WHERE id=? AND connection_id=?",
+                          (command_id, connection_id)).rowcount:
+            raise HTTPException(status_code=404, detail="快捷命令不存在")
+    return {"deleted": True}
 
 
 @app.post("/api/connections", status_code=201)
@@ -615,6 +729,7 @@ async def terminal(websocket: WebSocket):
     created = False
     delivered = False
     explicit_disconnect = False
+    launch_command = None
     try:
         data = await asyncio.wait_for(websocket.receive_json(), timeout=30)
         if data.get("type") == "resume":
@@ -628,6 +743,12 @@ async def terminal(websocket: WebSocket):
             with closing(database()) as db, db:
                 saved = db.execute("SELECT host, port, username, password FROM connections WHERE id=?",
                                    (data["connection_id"],)).fetchone()
+                if data.get("command_id"):
+                    command_row = db.execute("SELECT command FROM connection_commands WHERE id=? AND connection_id=?",
+                                             (data["command_id"], data["connection_id"])).fetchone()
+                    if not command_row:
+                        raise ValueError("快捷命令不存在")
+                    launch_command = command_row["command"]
             if saved is None:
                 raise ValueError("连接不存在")
             host, port, username, password = saved
@@ -679,6 +800,9 @@ async def terminal(websocket: WebSocket):
                 await websocket.send_bytes(bytes(session["buffer"]))
             if created:
                 session["reader"] = asyncio.create_task(read_ssh_output(session_token, session))
+                if launch_command is not None:
+                    session["process"].stdin.write(launch_command.encode("utf-8") + b"\r")
+                    session["input_version"] += 1
         while True:
             message = await websocket.receive()
             if message["type"] == "websocket.disconnect":

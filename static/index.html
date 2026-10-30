@@ -5,16 +5,16 @@
   <title>MXSSH</title>
   <script>try { if (localStorage.getItem('mxssh-theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch (_) {}</script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
-  <link rel="stylesheet" href="/static/style.css?v=20261030-settings1">
+  <link rel="stylesheet" href="/static/style.css?v=20261030-order5">
 </head>
 <body>
   <div class="app-shell">
     <main class="main-area">
-      <header class="app-header"><div class="brand"><span class="brand-mark">&gt;_</span><strong>MXSSH</strong></div><nav id="workspace-tabs" class="workspace-tabs" aria-label="工作区标签"><button class="nav-item home-tab active" data-view="connections" type="button">▤ <span>连接管理</span></button><div id="session-tabs" class="session-tabs" aria-label="SSH 会话"></div></nav><div class="header-actions"><button class="nav-item header-action" data-view="settings-view" type="button" title="设置">⚙ <span>设置</span></button><button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false">☼ 浅色主题</button></div></header>
-      <div class="topbar"><div class="breadcrumb"><span>MXSSH</span><span>/</span><strong id="page-name">连接管理</strong></div><div class="top-status" data-state="未连接"><span class="status-dot"></span><span id="status">未连接</span></div></div>
-      <div id="message" class="notice" role="status" aria-live="polite"></div>
+      <header class="app-header"><div class="brand"><span class="brand-mark">&gt;_</span><strong>MXSSH</strong></div><nav id="workspace-tabs" class="workspace-tabs" aria-label="工作区标签"><button class="nav-item home-tab active" data-view="connections" type="button">▤ <span>首页</span></button><div id="session-tabs" class="session-tabs" aria-label="SSH 会话"></div></nav><div class="header-actions"><button class="nav-item header-action" data-view="settings-view" type="button" title="设置">⚙ <span>设置</span></button><button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false">☼ 浅色主题</button></div></header>
+      <div class="topbar"><div class="breadcrumb"><span>MXSSH</span><span>/</span><strong id="page-name">连接管理</strong></div></div>
       <section id="connections" class="view connections-view">
         <div class="page-heading"><div><h1>连接管理</h1><p class="subtitle">保存和管理 SSH 主机</p></div><button id="new-connection" class="primary-button" type="button">＋ 新建连接</button></div>
+        <p id="message" class="connection-message" role="status" aria-live="polite"></p>
         <div class="list-toolbar"><div class="search-wrap"><span aria-hidden="true">⌕</span><input id="connection-search" type="search" placeholder="搜索名称、主机或用户名" aria-label="搜索连接" autocomplete="off"></div><span id="connection-count" class="list-count">0 个连接</span></div>
         <div class="list-header"><span>名称 / 地址</span><span>操作</span></div>
         <div id="connections-list" class="connections-list"></div>
@@ -44,18 +44,35 @@
       </section>
     </main>
   </div>
-  <div id="editor-overlay" class="modal-overlay" hidden><div class="modal" role="dialog" aria-modal="true" aria-labelledby="editor-title">
+  <div id="editor-overlay" class="modal-overlay" hidden><div class="modal commands-modal" role="dialog" aria-modal="true" aria-labelledby="editor-title">
     <div class="modal-heading"><div><h2 id="editor-title">新建连接</h2><p>填写 SSH 连接参数</p></div><button id="close-editor" class="icon-button" type="button" aria-label="关闭">×</button></div>
-    <form id="saved-form" hidden>
+    <div id="editor-tabs" class="editor-tabs" role="tablist" aria-label="服务器设置" hidden>
+      <button id="connection-tab" class="editor-tab active" type="button" role="tab" data-editor-tab="connection" aria-selected="true" aria-controls="saved-form">连接设置</button>
+      <button id="commands-tab" class="editor-tab" type="button" role="tab" data-editor-tab="commands" aria-selected="false" aria-controls="command-settings-panel">快捷指令</button>
+    </div>
+    <form id="saved-form" role="tabpanel" aria-labelledby="connection-tab" hidden>
       <label class="wide">连接名称<input name="name" required maxlength="100" placeholder="例如：生产服务器"></label>
       <label class="wide">主机地址<input name="host" required maxlength="255" placeholder="IP 地址或域名"></label>
       <label>SSH 端口<input name="port" type="number" min="1" max="65535" value="22" required></label>
       <label>用户名<input name="username" required maxlength="255" autocomplete="username" placeholder="例如 root"></label>
       <label class="wide">密码<input name="password" type="password" maxlength="4096" autocomplete="new-password" placeholder="输入服务器密码"></label>
       <p id="password-hint" class="wide">密码将保存在本机数据库中。</p><p id="editor-message" class="wide" role="alert"></p>
-      <div class="form-actions wide"><button id="test-connection" class="secondary-button" type="button">测试连接</button><button id="cancel-edit" class="secondary-button" type="button">取消</button><button class="primary-button" type="submit">保存连接</button></div>
+      <div class="form-actions wide"><button id="delete-connection" class="secondary-button danger-button" type="button" hidden>删除连接</button><button id="test-connection" class="secondary-button" type="button">测试连接</button><button id="cancel-edit" class="secondary-button" type="button">取消</button><button class="primary-button" type="submit">保存连接</button></div>
     </form>
+    <section id="command-settings-panel" role="tabpanel" aria-labelledby="commands-tab" hidden>
+    <p class="commands-hint">新增、编辑或删除当前连接的指令。</p>
+    <div id="commands-list" class="commands-list"></div>
+    <div class="commands-toolbar"><button id="new-command" class="secondary-button" type="button">＋ 新增指令</button></div>
+    <form id="command-form" hidden>
+      <label>命令名称<input name="name" maxlength="100" required placeholder="例如：查看日志"></label>
+      <label>命令<input name="command" maxlength="1000" required placeholder="例如：tail -f /var/log/syslog" autocomplete="off" spellcheck="false"></label>
+      <p class="commands-hint">仅支持单行命令，可从连接列表中的“快捷指令”执行。</p>
+      <div class="form-actions"><button id="cancel-command" class="secondary-button" type="button">取消</button><button class="primary-button" type="submit">保存命令</button></div>
+    </form>
+    <p id="commands-message" class="commands-message" role="status" aria-live="polite"></p>
+    </section>
   </div></div>
-  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script><script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script><script src="/static/app.js?v=20261030-settings1"></script>
+  <div id="quick-commands-popover" class="quick-commands-popover" role="group" aria-label="快捷指令列表" hidden><div id="quick-commands-list"></div><p id="quick-commands-message" role="status"></p></div>
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script><script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script><script src="/static/app.js?v=20261030-order5"></script>
 </body>
 </html>

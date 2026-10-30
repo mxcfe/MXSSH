@@ -1,4 +1,3 @@
-const status = document.querySelector('#status');
 const message = document.querySelector('#message');
 const disconnectButton = document.querySelector('#disconnect');
 const sessions = [];
@@ -39,6 +38,14 @@ const savedForm = document.querySelector('#saved-form');
 const connectionsList = document.querySelector('#connections-list');
 const editorOverlay = document.querySelector('#editor-overlay');
 const editorMessage = document.querySelector('#editor-message');
+const editorTabs = document.querySelector('#editor-tabs');
+const commandSettingsPanel = document.querySelector('#command-settings-panel');
+const commandsList = document.querySelector('#commands-list');
+const commandsMessage = document.querySelector('#commands-message');
+const commandForm = document.querySelector('#command-form');
+const quickCommandsPopover = document.querySelector('#quick-commands-popover');
+const quickCommandsList = document.querySelector('#quick-commands-list');
+const quickCommandsMessage = document.querySelector('#quick-commands-message');
 const connectionSearch = document.querySelector('#connection-search');
 const clearTerminal = document.querySelector('#clear-terminal');
 const terminalStatus = document.querySelector('#terminal-status');
@@ -72,7 +79,15 @@ let terminalFontSize = 14;
 const pageNames = { connections: '连接管理', 'terminal-view': '终端会话', 'settings-view': '设置' };
 let currentView = 'connections';
 let editingId = null;
+let editingConnection = null;
 let editorBusy = false;
+let commandsConnection = null;
+let editingCommandId = null;
+let commandsBusy = false;
+let commandsVersion = 0;
+let connectionOrderBusy = false;
+let quickCommandsAnchor = null;
+let quickCommandsVersion = 0;
 
 function filePanelVisible() {
   return currentView === 'terminal-view' && splitFilesOpen;
@@ -111,6 +126,7 @@ function fitVisibleTerminal(focus = false) {
 
 function showView(id) {
   if (!pageNames[id]) return;
+  closeQuickCommands();
   if (id !== 'terminal-view') setSplitFiles(false);
   if (id !== 'terminal-view' && document.fullscreenElement === terminalWindow) {
     document.exitFullscreen().catch(() => {});
@@ -142,12 +158,20 @@ document.querySelectorAll('[data-go]').forEach(button => button.addEventListener
 showView('connections');
 
 function closeEditor() {
-  if (editorBusy) return;
+  if (editorBusy || commandsBusy) return;
+  commandsVersion++;
   editorOverlay.hidden = true;
   savedForm.hidden = true;
   savedForm.reset();
+  commandSettingsPanel.hidden = true;
+  commandForm.hidden = true;
+  commandForm.reset();
+  commandsMessage.textContent = '';
+  commandsConnection = null;
+  editingCommandId = null;
   editorMessage.textContent = '';
   editingId = null;
+  editingConnection = null;
 }
 
 async function api(url, options = {}) {
@@ -223,6 +247,7 @@ settingsForm.addEventListener('submit', async event => {
 
 function showEditor(item = null) {
   editingId = item ? item.id : null;
+  editingConnection = item;
   savedForm.reset();
   for (const field of ['name', 'host', 'port', 'username']) {
     if (item) savedForm.elements[field].value = item[field];
@@ -231,11 +256,13 @@ function showEditor(item = null) {
   document.querySelector('#password-hint').textContent = item
     ? '留空则保留原密码；密码以明文保存在本机数据库中。'
     : '密码以明文保存在本机数据库中。';
-  document.querySelector('#editor-title').textContent = item ? '编辑连接' : '新建连接';
+  document.querySelector('#editor-title').textContent = item ? '连接设置' : '新建连接';
+  document.querySelector('#delete-connection').hidden = !item;
+  editorTabs.hidden = !item;
   editorMessage.textContent = '';
   editorMessage.dataset.state = '';
   editorOverlay.hidden = false;
-  savedForm.hidden = false;
+  showEditorTab('connection');
   savedForm.elements.name.focus();
 }
 
@@ -246,7 +273,28 @@ async function loadConnections() {
   } catch (error) { message.textContent = `加载连接失败：${error.message}`; }
 }
 
+async function moveConnection(item, move, restoreFocus = false) {
+  if (connectionOrderBusy) return;
+  connectionOrderBusy = true;
+  renderConnections();
+  try {
+    await api(`/api/connections/${encodeURIComponent(item.id)}/move`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(move),
+    });
+    await loadConnections();
+  } catch (error) { message.textContent = `调整顺序失败：${error.message}`; }
+  finally {
+    connectionOrderBusy = false;
+    renderConnections();
+    if (restoreFocus) {
+      const row = [...connectionsList.querySelectorAll('.connection-row')].find(element => element.dataset.connectionId === item.id);
+      row?.querySelector('.connection-drag-handle')?.focus();
+    }
+  }
+}
+
 function renderConnections() {
+    closeQuickCommands();
     const query = connectionSearch.value.trim().toLocaleLowerCase();
     const connections = savedConnections.filter(item =>
       [item.name, item.host, item.username, String(item.port)].some(value => value.toLocaleLowerCase().includes(query))
@@ -263,6 +311,7 @@ function renderConnections() {
     for (const item of connections) {
       const row = document.createElement('div');
       row.className = 'connection-row';
+      row.dataset.connectionId = item.id;
       const info = document.createElement('div');
       info.className = 'connection-info';
       const avatar = document.createElement('span');
@@ -281,29 +330,276 @@ function renderConnections() {
       for (const [label, action] of [
         ['终端', () => startConnection({ connection_id: item.id }, item.name, 'terminal')],
         ['文件', () => startConnection({ connection_id: item.id }, item.name, 'files')],
-        ['编辑', () => showEditor(item)],
-        ['删除', async () => {
-          if (!confirm(`确定删除连接“${item.name}”吗？`)) return;
-          try {
-            await api(`/api/connections/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
-            if (editingId === item.id) closeEditor();
-            await loadConnections();
-          } catch (error) { message.textContent = error.message; }
-        }],
+        ['快捷指令', event => showQuickCommands(item, event.currentTarget)],
+        ['设置', () => showEditor(item)],
       ]) {
         const button = document.createElement('button');
         button.type = 'button';
         button.textContent = label;
+        if (label === '快捷指令') {
+          button.setAttribute('aria-haspopup', 'true');
+          button.setAttribute('aria-expanded', 'false');
+          button.setAttribute('aria-controls', 'quick-commands-popover');
+        }
         button.addEventListener('click', action);
         actions.append(button);
       }
-      row.append(info, actions);
+      const handle = document.createElement('button');
+      handle.type = 'button';
+      handle.className = 'connection-drag-handle';
+      handle.textContent = '⠿';
+      handle.title = query ? '清除搜索后可调整顺序' : '拖动调整顺序（也可使用上下方向键）';
+      handle.setAttribute('aria-label', `调整服务器 ${item.name} 的顺序，拖动或使用上下方向键`);
+      handle.disabled = !!query || connectionOrderBusy || savedConnections.length < 2;
+      handle.addEventListener('keydown', event => {
+        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+        event.preventDefault();
+        moveConnection(item, { direction: event.key === 'ArrowUp' ? 'up' : 'down' }, true);
+      });
+      handle.addEventListener('pointerdown', event => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        handle.setPointerCapture(event.pointerId);
+        const startX = event.clientX, startY = event.clientY;
+        let target = null, placement = null, dragging = false;
+        const clearIndicator = () => connectionsList.querySelectorAll('.drop-before, .drop-after').forEach(element => element.classList.remove('drop-before', 'drop-after'));
+        const move = e => {
+          if (!dragging && Math.hypot(e.clientX - startX, e.clientY - startY) < 5) return;
+          dragging = true;
+          row.classList.add('dragging');
+          clearIndicator();
+          const candidate = document.elementFromPoint(e.clientX, e.clientY)?.closest('.connection-row');
+          target = candidate && connectionsList.contains(candidate) && candidate !== row ? candidate : null;
+          if (target) {
+            const bounds = target.getBoundingClientRect();
+            placement = e.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after';
+            target.classList.add(`drop-${placement}`);
+          }
+        };
+        const finish = e => {
+          handle.removeEventListener('pointermove', move);
+          handle.removeEventListener('pointerup', finish);
+          handle.removeEventListener('pointercancel', finish);
+          row.classList.remove('dragging');
+          clearIndicator();
+          if (e.type === 'pointerup' && dragging && target) moveConnection(item, { target_id: target.dataset.connectionId, placement });
+        };
+        handle.addEventListener('pointermove', move);
+        handle.addEventListener('pointerup', finish);
+        handle.addEventListener('pointercancel', finish);
+      });
+      const controls = document.createElement('div');
+      controls.className = 'connection-controls';
+      controls.append(handle, actions);
+      row.append(info, controls);
       connectionsList.append(row);
     }
 }
 connectionSearch.addEventListener('input', renderConnections);
 
+function closeQuickCommands() {
+  quickCommandsVersion++;
+  if (quickCommandsAnchor) quickCommandsAnchor.setAttribute('aria-expanded', 'false');
+  quickCommandsAnchor = null;
+  quickCommandsPopover.hidden = true;
+}
+
+function positionQuickCommands() {
+  if (quickCommandsPopover.hidden || !quickCommandsAnchor) return;
+  const rect = quickCommandsAnchor.getBoundingClientRect();
+  if (!quickCommandsAnchor.isConnected || rect.bottom <= 0 || rect.top >= window.innerHeight) {
+    closeQuickCommands();
+    return;
+  }
+  const width = quickCommandsPopover.offsetWidth;
+  const height = quickCommandsPopover.offsetHeight;
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+  const below = rect.bottom + 6;
+  const top = below + height <= window.innerHeight - 8 ? below : Math.max(8, rect.top - height - 6);
+  quickCommandsPopover.style.left = `${left}px`;
+  quickCommandsPopover.style.top = `${top}px`;
+}
+
+async function showQuickCommands(connection, anchor) {
+  if (quickCommandsAnchor === anchor && !quickCommandsPopover.hidden) { closeQuickCommands(); return; }
+  closeQuickCommands();
+  quickCommandsAnchor = anchor;
+  anchor.setAttribute('aria-expanded', 'true');
+  const version = ++quickCommandsVersion;
+  quickCommandsList.replaceChildren();
+  quickCommandsMessage.textContent = '正在读取…';
+  quickCommandsPopover.hidden = false;
+  positionQuickCommands();
+  try {
+    const items = await api(`/api/connections/${encodeURIComponent(connection.id)}/commands`);
+    if (version !== quickCommandsVersion) return;
+    quickCommandsMessage.textContent = items.length ? '' : '暂无指令，请在连接设置中新增。';
+    for (const item of items) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'quick-command-item';
+      const label = document.createElement('strong');
+      label.textContent = item.name;
+      const command = document.createElement('code');
+      command.textContent = item.command;
+      button.append(label, command);
+      button.title = item.command;
+      button.addEventListener('click', () => {
+        closeQuickCommands();
+        startConnection({ connection_id: connection.id, command_id: item.id }, `${connection.name} · ${item.name}`, 'terminal');
+      });
+      quickCommandsList.append(button);
+    }
+    positionQuickCommands();
+  } catch (error) {
+    if (version !== quickCommandsVersion) return;
+    quickCommandsMessage.textContent = `读取失败：${error.message}`;
+    positionQuickCommands();
+  }
+}
+
+document.addEventListener('pointerdown', event => {
+  if (!quickCommandsPopover.hidden && !quickCommandsPopover.contains(event.target) && !quickCommandsAnchor?.contains(event.target)) closeQuickCommands();
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !quickCommandsPopover.hidden) {
+    event.preventDefault();
+    const anchor = quickCommandsAnchor;
+    closeQuickCommands();
+    if (anchor) anchor.focus();
+    event.stopImmediatePropagation();
+  }
+});
+window.addEventListener('resize', positionQuickCommands);
+window.addEventListener('scroll', positionQuickCommands, true);
+
+function showEditorTab(tab) {
+  if (editorBusy || commandsBusy || (tab === 'commands' && !editingConnection)) return;
+  const showCommands = tab === 'commands';
+  savedForm.hidden = showCommands;
+  commandSettingsPanel.hidden = !showCommands;
+  editorTabs.querySelectorAll('[role="tab"]').forEach(button => {
+    const selected = button.dataset.editorTab === tab;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-selected', String(selected));
+  });
+  if (showCommands && commandsConnection !== editingConnection) {
+    commandsConnection = editingConnection;
+    loadCommands();
+  }
+}
+
+function editCommand(item = null) {
+  editingCommandId = item ? item.id : null;
+  commandForm.reset();
+  if (item) {
+    commandForm.elements.name.value = item.name;
+    commandForm.elements.command.value = item.command;
+  }
+  commandForm.hidden = false;
+  commandsMessage.textContent = '';
+  commandForm.elements.name.focus();
+}
+
+function setCommandsBusy(busy) {
+  commandsBusy = busy;
+  for (const element of commandForm.elements) element.disabled = busy;
+  document.querySelector('#new-command').disabled = busy;
+  document.querySelector('#close-editor').disabled = busy;
+  editorTabs.querySelectorAll('button').forEach(button => { button.disabled = busy; });
+  commandsList.querySelectorAll('button').forEach(button => { button.disabled = busy; });
+}
+
+async function loadCommands() {
+  const connection = commandsConnection;
+  if (!connection) return;
+  const version = ++commandsVersion;
+  commandsList.replaceChildren();
+  commandsMessage.textContent = '正在读取快捷命令…';
+  try {
+    const items = await api(`/api/connections/${encodeURIComponent(connection.id)}/commands`);
+    if (version !== commandsVersion || commandsConnection !== connection) return;
+    commandsMessage.textContent = items.length ? '' : '暂无快捷指令，请先新增。';
+    for (const item of items) {
+      const row = document.createElement('div');
+      row.className = 'command-row';
+      const run = document.createElement('div');
+      run.className = 'command-run';
+      const label = document.createElement('strong');
+      label.textContent = item.name;
+      const command = document.createElement('code');
+      command.textContent = item.command;
+      run.append(label, command);
+      const actions = document.createElement('div');
+      actions.className = 'command-actions';
+      const edit = document.createElement('button');
+      edit.type = 'button'; edit.className = 'tool-button'; edit.textContent = '编辑';
+      edit.addEventListener('click', () => editCommand(item));
+      const remove = document.createElement('button');
+      remove.type = 'button'; remove.className = 'tool-button'; remove.textContent = '删除';
+      remove.addEventListener('click', async () => {
+        if (commandsBusy || !confirm(`确定删除快捷命令“${item.name}”吗？`)) return;
+        setCommandsBusy(true);
+        try {
+          await api(`/api/connections/${encodeURIComponent(connection.id)}/commands/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+          if (editingCommandId === item.id) { editingCommandId = null; commandForm.hidden = true; commandForm.reset(); }
+          await loadCommands();
+        } catch (error) { commandsMessage.textContent = `删除失败：${error.message}`; }
+        finally { setCommandsBusy(false); }
+      });
+      edit.disabled = commandsBusy;
+      remove.disabled = commandsBusy;
+      actions.append(edit, remove);
+      row.append(run, actions);
+      commandsList.append(row);
+    }
+  } catch (error) {
+    if (version === commandsVersion && commandsConnection === connection) commandsMessage.textContent = `读取失败：${error.message}`;
+  }
+}
+
+editorTabs.querySelectorAll('[data-editor-tab]').forEach(button => button.addEventListener('click', () => showEditorTab(button.dataset.editorTab)));
+document.querySelector('#new-command').addEventListener('click', () => editCommand());
+document.querySelector('#cancel-command').addEventListener('click', () => { commandForm.hidden = true; commandForm.reset(); editingCommandId = null; });
+commandForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (commandsBusy || !commandsConnection) return;
+  const connection = commandsConnection;
+  const id = editingCommandId;
+  const data = Object.fromEntries(new FormData(commandForm).entries());
+  if (!data.name.trim() || !data.command.trim() || /[\x00-\x1f\x7f]/.test(data.command)) {
+    commandsMessage.textContent = '请输入名称和非空单行命令，命令不能包含控制字符。';
+    return;
+  }
+  const url = `/api/connections/${encodeURIComponent(connection.id)}/commands${id ? `/${encodeURIComponent(id)}` : ''}`;
+  setCommandsBusy(true);
+  commandsMessage.textContent = '正在保存…';
+  try {
+    await api(url, { method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+    commandForm.hidden = true;
+    commandForm.reset();
+    editingCommandId = null;
+    await loadCommands();
+  } catch (error) { commandsMessage.textContent = `保存失败：${error.message}`; }
+  finally { setCommandsBusy(false); }
+});
+
 document.querySelector('#new-connection').addEventListener('click', () => showEditor());
+document.querySelector('#delete-connection').addEventListener('click', async () => {
+  if (!editingConnection || editorBusy || !confirm(`确定删除连接“${editingConnection.name}”及其快捷指令吗？`)) return;
+  const id = editingConnection.id;
+  setEditorBusy(true);
+  try {
+    await api(`/api/connections/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    setEditorBusy(false);
+    closeEditor();
+    message.textContent = '';
+    await loadConnections();
+  } catch (error) {
+    editorMessage.dataset.state = 'error';
+    editorMessage.textContent = `删除失败：${error.message}`;
+  } finally { setEditorBusy(false); }
+});
 document.querySelector('#cancel-edit').addEventListener('click', closeEditor);
 document.querySelector('#close-editor').addEventListener('click', closeEditor);
 editorOverlay.addEventListener('click', event => { if (event.target === editorOverlay) closeEditor(); });
@@ -324,6 +620,7 @@ function setEditorBusy(busy) {
   editorBusy = busy;
   for (const element of savedForm.elements) element.disabled = busy;
   document.querySelector('#close-editor').disabled = busy;
+  editorTabs.querySelectorAll('button').forEach(button => { button.disabled = busy; });
 }
 
 async function testConnection(data, id) {
@@ -381,7 +678,7 @@ savedForm.addEventListener('submit', async event => {
     });
     setEditorBusy(false);
     closeEditor();
-    message.textContent = '连接已保存。';
+    message.textContent = '';
     await loadConnections();
   } catch (error) { editorMessage.dataset.state = 'error'; editorMessage.textContent = `保存失败：${error.message}`; }
   finally { setEditorBusy(false); }
@@ -402,9 +699,6 @@ function refreshSession(session) {
   updateSessionLabel(session);
   if (session === activeSession) {
     terminalKeys.querySelectorAll('button').forEach(button => { button.disabled = session.state !== '已连接' || session.socket.readyState !== WebSocket.OPEN; });
-    status.textContent = session.state;
-    status.parentElement.dataset.state = session.state;
-    message.textContent = session.message;
     terminalStatus.textContent = session.message.startsWith('连接错误：') || session.message.startsWith('WebSocket')
       ? session.message : `${session.name} · ${session.state}`;
     terminalStatus.title = terminalStatus.textContent;
@@ -430,9 +724,6 @@ function activateSession(session) {
     refreshSession(session);
     fitVisibleTerminal(true);
   } else {
-    status.textContent = '未连接';
-    status.parentElement.dataset.state = '未连接';
-    message.textContent = '请从连接管理选择服务器。';
     terminalStatus.textContent = '无活动会话';
     clearTerminal.disabled = true;
     disconnectButton.disabled = true;
