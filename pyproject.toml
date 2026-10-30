@@ -1,0 +1,10 @@
+[project]
+name = "mxssh"
+version = "0.1.0"
+description = "Browser-based SSH terminal"
+requires-python = ">=3.11"
+dependencies = [
+    "asyncssh>=2.18,<3",
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.34,<1",
+]
