@@ -1,15 +1,31 @@
 import asyncio
+import copy
 import json
+import os
 import posixpath
+import re
 import shlex
 import sqlite3
 import stat
+import subprocess
+import sys
+import tempfile
+import threading
 import time
 import tomllib
 import uuid
+import webbrowser
 from contextlib import closing, suppress
 from pathlib import Path
 from urllib.parse import quote, urlsplit
+
+# A windowed frozen executable has no console streams, but dependencies may
+# still use them for logging.
+if getattr(sys, "frozen", False):
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w")
 
 import asyncssh
 import uvicorn
@@ -20,17 +36,26 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 BASE = Path(__file__).resolve().parent
-with (BASE / "config.toml").open("rb") as file:
+DATA_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else BASE
+CONFIG_PATH = DATA_DIR / "config.toml"
+if getattr(sys, "frozen", False) and not CONFIG_PATH.exists():
+    try:
+        with CONFIG_PATH.open("xb") as config_file:
+            config_file.write((BASE / "config.toml").read_bytes())
+    except FileExistsError:
+        pass
+with CONFIG_PATH.open("rb") as file:
     CONFIG = tomllib.load(file)
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
-DATABASE = BASE / "connections.sqlite3"
+DATABASE = DATA_DIR / "connections.sqlite3"
 # A random capability identifies each SSH session to the browser.
 SSH_SESSIONS = {}
 HOST_KEY_CHALLENGES = {}
 SESSION_GRACE_SECONDS = 60
 OUTPUT_BUFFER_LIMIT = 1024 * 1024
+CONFIG_LOCK = threading.Lock()
 
 # Run as an SSH exec channel, not in the interactive terminal. No remote files
 # or shell startup settings are changed. Refuse ambiguous process matches.
@@ -411,6 +436,83 @@ def check_origin(request: Request):
         raise HTTPException(status_code=403, detail="Invalid origin")
 
 
+class ServerSettingsInput(BaseModel):
+    port: int = Field(ge=1, le=65535, strict=True)
+
+
+def read_config_text():
+    text = CONFIG_PATH.read_bytes().decode("utf-8")
+    return text, tomllib.loads(text)
+
+
+def update_config_port(text, original, port):
+    expected = copy.deepcopy(original)
+    if "server" in expected and not isinstance(expected["server"], dict):
+        raise ValueError("配置文件中的 server 不是表")
+    expected.setdefault("server", {})["port"] = port
+    newline = "\r\n" if "\r\n" in text else "\n"
+    section = re.search(r"(?m)^[ \t]*\[server\][ \t]*(?:\#[^\r\n]*)?\r?$", text)
+    if section:
+        next_section = re.search(r"(?m)^[ \t]*\[", text[section.end():])
+        end = section.end() + next_section.start() if next_section else len(text)
+        body = text[section.end():end]
+        entry = re.search(r"(?m)^([ \t]*port[ \t]*=[ \t]*)([^\r\n#]+?)([ \t]*(?:\#[^\r\n]*)?)(\r?)$", body)
+        if entry:
+            body = body[:entry.start()] + entry.group(1) + str(port) + entry.group(3) + entry.group(4) + body[entry.end():]
+        else:
+            body = newline + f"port = {port}" + body
+        updated = text[:section.end()] + body + text[end:]
+    elif "server" not in original:
+        updated = text + ("" if not text or text.endswith("\n") else newline) + f"[server]{newline}port = {port}{newline}"
+    else:
+        raise ValueError("请先将 server 配置改为独立的 [server] 表")
+    if tomllib.loads(updated) != expected:
+        raise ValueError("无法安全更新此配置文件，请手动修改 server.port")
+    return updated
+
+
+def settings_response(config):
+    configured_port = int(config.get("server", {}).get("port", 8000))
+    active_port = int(CONFIG.get("server", {}).get("port", 8000))
+    return {"port": configured_port, "active_port": active_port, "restart_required": configured_port != active_port}
+
+
+@app.get("/api/settings")
+def get_settings():
+    try:
+        with CONFIG_LOCK:
+            _, config = read_config_text()
+            return settings_response(config)
+    except (OSError, ValueError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise HTTPException(status_code=500, detail=f"读取配置失败：{exc}") from exc
+
+
+@app.put("/api/settings")
+def update_settings(item: ServerSettingsInput, request: Request):
+    check_origin(request)
+    temp_path = None
+    try:
+        with CONFIG_LOCK:
+            text, config = read_config_text()
+            updated = update_config_port(text, config, item.port)
+            if updated != text:
+                file_mode = stat.S_IMODE(CONFIG_PATH.stat().st_mode)
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=CONFIG_PATH.parent,
+                                                 prefix=".mxssh-config-", suffix=".tmp", delete=False) as temp:
+                    temp_path = Path(temp.name)
+                    temp.write(updated)
+                os.chmod(temp_path, file_mode)
+                os.replace(temp_path, CONFIG_PATH)
+                temp_path = None
+            return settings_response(tomllib.loads(updated))
+    except (OSError, ValueError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise HTTPException(status_code=500, detail=f"保存配置失败：{exc}") from exc
+    finally:
+        if temp_path:
+            with suppress(OSError):
+                temp_path.unlink()
+
+
 @app.post("/api/host-keys/confirm")
 def trust_host_key(item: HostKeyConfirmation, request: Request):
     check_origin(request)
@@ -613,6 +715,141 @@ async def terminal(websocket: WebSocket):
             await websocket.close()
 
 
-if __name__ == "__main__":
+def server_address():
     server = CONFIG.get("server", {})
-    uvicorn.run(app, host=server.get("host", "127.0.0.1"), port=int(server.get("port", 8000)))
+    return str(server.get("host", "127.0.0.1")), int(server.get("port", 8000))
+
+
+def browser_url(host, port):
+    if host in ("0.0.0.0", "::", ""):
+        host = "127.0.0.1"
+    elif ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{port}/"
+
+
+def publish_tray_status(path, status):
+    status_file = Path(path)
+    temporary = status_file.with_suffix(".tmp")
+    temporary.write_text(status, encoding="utf-8")
+    temporary.replace(status_file)
+
+
+def run_windows_tray(status_path=None):
+    """Run the HTTP server and tray icon in the detached Windows process."""
+    import pystray
+    from tray_icon import create_icon
+
+    host, port = server_address()
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, timeout_graceful_shutdown=5))
+    stopped = threading.Event()
+    failures = []
+    tray = None
+
+    def report_status(status):
+        if status_path:
+            publish_tray_status(status_path, status)
+        elif status.startswith("error:"):
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, status[6:], "MXSSH 启动失败", 0x10)
+
+    def run_server():
+        try:
+            server.run()
+        except BaseException as exc:
+            failures.append("网页服务启动失败，请检查端口和监听地址。" if isinstance(exc, SystemExit) else (str(exc) or "网页服务启动失败。"))
+        finally:
+            stopped.set()
+            if tray:
+                tray.stop()
+
+    thread = threading.Thread(target=run_server, name="mxssh-server", daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 15
+    try:
+        while not server.started:
+            if stopped.is_set():
+                raise RuntimeError(failures[0] if failures else "网页服务启动失败，请检查端口是否被占用。")
+            if time.monotonic() >= deadline:
+                raise RuntimeError("网页服务启动超时。")
+            stopped.wait(0.05)
+
+        icon_image = create_icon()
+
+        def open_page(icon, item):
+            webbrowser.open(browser_url(host, port))
+
+        def exit_program(icon, item):
+            server.should_exit = True
+            icon.stop()
+
+        tray = pystray.Icon("MXSSH", icon_image, "MXSSH", pystray.Menu(
+            pystray.MenuItem("打开", open_page, default=True),
+            pystray.MenuItem("退出程序", exit_program),
+        ))
+
+        def ready(icon):
+            try:
+                if stopped.is_set():
+                    raise RuntimeError("网页服务已停止，请检查监听地址和端口。")
+                icon.visible = True
+                report_status("ready")
+            except Exception as exc:
+                with suppress(OSError):
+                    report_status("error:" + (str(exc) or "无法显示托盘图标。"))
+                threading.Thread(target=icon.stop, daemon=True).start()
+
+        tray.run(setup=ready)
+    except BaseException as exc:
+        with suppress(OSError):
+            report_status("error:" + (str(exc) or "托盘启动失败"))
+        raise
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+
+def start_windows_tray():
+    """Launch a windowless child and report startup failures to the caller."""
+    with tempfile.TemporaryDirectory(prefix="mxssh-tray-") as directory:
+        status_file = Path(directory) / "status"
+        process = subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "--tray-worker", str(status_file)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if status_file.exists():
+                status = status_file.read_text(encoding="utf-8")
+                if status == "ready":
+                    print("MXSSH 已启动，可通过系统托盘打开或退出。")
+                    return
+                if status.startswith("error:"):
+                    raise SystemExit(status[6:])
+            if process.poll() is not None:
+                raise SystemExit("托盘启动失败，请检查依赖和网页服务端口。")
+            time.sleep(0.05)
+        process.terminate()
+        raise SystemExit("托盘启动超时，请检查网页服务端口。")
+
+
+if __name__ == "__main__":
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        try:
+            run_windows_tray()
+        except BaseException:
+            # run_windows_tray has already shown the startup error.
+            raise SystemExit(1)
+    elif sys.platform == "win32" and len(sys.argv) == 3 and sys.argv[1] == "--tray-worker":
+        try:
+            run_windows_tray(sys.argv[2])
+        except BaseException as exc:
+            with suppress(OSError):
+                publish_tray_status(sys.argv[2], "error:" + (str(exc) or "托盘启动失败"))
+            raise
+    elif sys.platform == "win32":
+        start_windows_tray()
+    else:
+        host, port = server_address()
+        uvicorn.run(app, host=host, port=port)

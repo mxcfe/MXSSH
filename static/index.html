@@ -5,12 +5,12 @@
   <title>MXSSH</title>
   <script>try { if (localStorage.getItem('mxssh-theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch (_) {}</script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
-  <link rel="stylesheet" href="/static/style.css?v=20261030-trust1">
+  <link rel="stylesheet" href="/static/style.css?v=20261030-settings1">
 </head>
 <body>
   <div class="app-shell">
     <main class="main-area">
-      <header class="app-header"><div class="brand"><span class="brand-mark">&gt;_</span><strong>MXSSH</strong></div><nav id="workspace-tabs" class="workspace-tabs" aria-label="工作区标签"><button class="nav-item home-tab active" data-view="connections" type="button">▤ <span>连接管理</span></button><div id="session-tabs" class="session-tabs" aria-label="SSH 会话"></div></nav><div class="header-actions"><button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false">☼ 浅色主题</button></div></header>
+      <header class="app-header"><div class="brand"><span class="brand-mark">&gt;_</span><strong>MXSSH</strong></div><nav id="workspace-tabs" class="workspace-tabs" aria-label="工作区标签"><button class="nav-item home-tab active" data-view="connections" type="button">▤ <span>连接管理</span></button><div id="session-tabs" class="session-tabs" aria-label="SSH 会话"></div></nav><div class="header-actions"><button class="nav-item header-action" data-view="settings-view" type="button" title="设置">⚙ <span>设置</span></button><button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false">☼ 浅色主题</button></div></header>
       <div class="topbar"><div class="breadcrumb"><span>MXSSH</span><span>/</span><strong id="page-name">连接管理</strong></div><div class="top-status" data-state="未连接"><span class="status-dot"></span><span id="status">未连接</span></div></div>
       <div id="message" class="notice" role="status" aria-live="polite"></div>
       <section id="connections" class="view connections-view">
@@ -30,6 +30,18 @@
       </section>
         </div></div>
       </section>
+      <section id="settings-view" class="view settings-view" hidden>
+        <div class="page-heading"><div><h1>设置</h1><p class="subtitle">配置 MXSSH 网页服务</p></div></div>
+        <div class="settings-card">
+          <div class="settings-heading"><h2>服务端口</h2><p>修改浏览器访问 MXSSH 使用的端口。</p></div>
+          <form id="settings-form">
+            <label for="settings-port">网页服务端口</label>
+            <div class="settings-input-row"><input id="settings-port" name="port" type="number" min="1" max="65535" required disabled><button id="settings-save" class="primary-button" type="submit" disabled>保存设置</button></div>
+            <p class="settings-hint">当前运行端口：<strong id="settings-active-port">—</strong>。修改后重启 MXSSH 生效。</p>
+            <p id="settings-message" class="settings-message" role="status" aria-live="polite"></p>
+          </form>
+        </div>
+      </section>
     </main>
   </div>
   <div id="editor-overlay" class="modal-overlay" hidden><div class="modal" role="dialog" aria-modal="true" aria-labelledby="editor-title">
@@ -44,6 +56,6 @@
       <div class="form-actions wide"><button id="test-connection" class="secondary-button" type="button">测试连接</button><button id="cancel-edit" class="secondary-button" type="button">取消</button><button class="primary-button" type="submit">保存连接</button></div>
     </form>
   </div></div>
-  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script><script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script><script src="/static/app.js?v=20261030-trust1"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script><script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script><script src="/static/app.js?v=20261030-settings1"></script>
 </body>
 </html>

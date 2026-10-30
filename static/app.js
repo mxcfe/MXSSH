@@ -69,7 +69,7 @@ function persistSessions() {
 }
 let savedConnections = [];
 let terminalFontSize = 14;
-const pageNames = { connections: '连接管理', 'terminal-view': '终端会话' };
+const pageNames = { connections: '连接管理', 'terminal-view': '终端会话', 'settings-view': '设置' };
 let currentView = 'connections';
 let editingId = null;
 let editorBusy = false;
@@ -133,6 +133,7 @@ function showView(id) {
     else session.tabLabel.removeAttribute('aria-current');
   }
   document.querySelector('#page-name').textContent = pageNames[id];
+  if (id === 'settings-view') loadSettings();
   if (filePanelVisible()) refreshFilePanel();
   if (id === 'terminal-view') fitVisibleTerminal(true);
 }
@@ -157,6 +158,68 @@ async function api(url, options = {}) {
   }
   return response.json();
 }
+
+const settingsForm = document.querySelector('#settings-form');
+const settingsPort = document.querySelector('#settings-port');
+const settingsSave = document.querySelector('#settings-save');
+const settingsMessage = document.querySelector('#settings-message');
+let settingsRequestVersion = 0;
+let settingsSaveInFlight = false;
+
+function displaySettings(settings, saved = false) {
+  settingsPort.value = settings.port;
+  document.querySelector('#settings-active-port').textContent = settings.active_port;
+  settingsMessage.dataset.state = settings.restart_required ? 'pending' : 'success';
+  settingsMessage.textContent = settings.restart_required
+    ? `已保存端口 ${settings.port}，请退出并重新启动 MXSSH 后生效。`
+    : (saved ? '设置已保存，当前端口无需重启。' : '');
+}
+
+async function loadSettings() {
+  if (settingsSaveInFlight) return;
+  const version = ++settingsRequestVersion;
+  settingsPort.disabled = true;
+  settingsSave.disabled = true;
+  settingsMessage.dataset.state = '';
+  settingsMessage.textContent = '正在读取设置…';
+  try {
+    const settings = await api('/api/settings');
+    if (version !== settingsRequestVersion) return;
+    displaySettings(settings);
+    settingsPort.disabled = false;
+    settingsSave.disabled = false;
+  } catch (error) {
+    if (version !== settingsRequestVersion) return;
+    settingsMessage.dataset.state = 'error';
+    settingsMessage.textContent = `读取设置失败：${error.message}`;
+  }
+}
+
+settingsForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!settingsForm.reportValidity() || settingsSave.disabled) return;
+  const port = Number(settingsPort.value);
+  const version = ++settingsRequestVersion;
+  settingsSaveInFlight = true;
+  settingsPort.disabled = true;
+  settingsSave.disabled = true;
+  settingsMessage.dataset.state = '';
+  settingsMessage.textContent = '正在保存设置…';
+  try {
+    const settings = await api('/api/settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ port }),
+    });
+    if (version === settingsRequestVersion) displaySettings(settings, true);
+  } catch (error) {
+    if (version === settingsRequestVersion) {
+      settingsMessage.dataset.state = 'error';
+      settingsMessage.textContent = `保存设置失败：${error.message}`;
+    }
+  } finally {
+    settingsSaveInFlight = false;
+    if (version === settingsRequestVersion) { settingsPort.disabled = false; settingsSave.disabled = false; }
+  }
+});
 
 function showEditor(item = null) {
   editingId = item ? item.id : null;
